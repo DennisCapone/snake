@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 
 // --- TIPI E COSTANTI ---
 type Point = { x: number; y: number };
-type SnakeSegment = { x: number; y: number; px: number; py: number }; // px/py = posizione precedente per animazione fluida
+type SnakeSegment = { x: number; y: number; px: number; py: number };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
 type FloatingText = { x: number; y: number; text: string; life: number; maxLife: number };
 
@@ -14,13 +14,11 @@ const CANVAS_SIZE = GRID * CELL;
 
 export default function SnakeDopamine() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  
-  // Stati React per la UI
+
   const [gameState, setGameState] = useState<"menu" | "playing" | "gameover">("menu");
   const [mode, setMode] = useState<"manual" | "auto">("manual");
   const [score, setScore] = useState<number>(0);
 
-  // useRef per lo stato di gioco ad alte prestazioni (evita re-render di React a 60fps)
   const game = useRef({
     snake: [] as SnakeSegment[],
     dir: { x: 0, y: -1 },
@@ -29,21 +27,28 @@ export default function SnakeDopamine() {
     particles: [] as Particle[],
     texts: [] as FloatingText[],
     logicTimer: 0,
-    speed: 100, // ms per mossa
+    speed: 100, 
     shake: 0,
     lastTime: 0,
   });
 
   // --- LOGICA AI (AUTO MODE) ---
   const getSmartDir = useCallback(() => {
-    const { snake, food } = game.current;
+    const { snake, food, dir } = game.current;
     const head = snake[0];
     const dirs = [{x:0, y:-1}, {x:0, y:1}, {x:-1, y:0}, {x:1, y:0}];
-    const isBody = (x: number, y: number) => snake.some(s => s.x === x && s.y === y);
+    
+    // Evita inversioni a U repentine nell'AI
+    const validDirs = dirs.filter(d => !(d.x === -dir.x && d.y === -dir.y));
+
+    // isBodyStrict considera l'intero corpo (utile per il pathfinding verso il cibo)
+    const isBodyStrict = (x: number, y: number) => snake.some(s => s.x === x && s.y === y);
+    // isBodyLoose ignora la punta della coda (utile per la sopravvivenza, permette di inseguire la propria coda)
+    const isBodyLoose = (x: number, y: number) => snake.some((s, i) => i !== snake.length - 1 && s.x === x && s.y === y);
 
     // BFS per trovare il cibo
     const q: { x: number; y: number; path: Point[] }[] = [{ x: head.x, y: head.y, path: [] }];
-    const visited = new Set([`${head.x},${head.y}`]);
+    const visited = new Set<number>([head.x + head.y * GRID]);
     let targetPath: Point[] | null = null;
 
     while (q.length > 0) {
@@ -52,10 +57,11 @@ export default function SnakeDopamine() {
         targetPath = curr.path;
         break;
       }
-      for (const d of dirs) {
+      for (const d of (curr.path.length === 0 ? validDirs : dirs)) {
         const nx = curr.x + d.x, ny = curr.y + d.y;
-        if (nx >= 0 && nx < GRID && ny >= 0 && ny < GRID && !isBody(nx, ny) && !visited.has(`${nx},${ny}`)) {
-          visited.add(`${nx},${ny}`);
+        const posKey = nx + ny * GRID;
+        if (nx >= 0 && nx < GRID && ny >= 0 && ny < GRID && !isBodyStrict(nx, ny) && !visited.has(posKey)) {
+          visited.add(posKey);
           q.push({ x: nx, y: ny, path: [...curr.path, d] });
         }
       }
@@ -63,22 +69,28 @@ export default function SnakeDopamine() {
 
     if (targetPath && targetPath.length > 0) return targetPath[0];
 
-    // Modalità Sopravvivenza: scegli il primo spazio libero se intrappolato
-    for (const d of dirs) {
+    // Modalità Sopravvivenza: cerca la prima cella sicura, permettendosi di seguire la coda
+    for (const d of validDirs) {
       const nx = head.x + d.x, ny = head.y + d.y;
-      if (nx >= 0 && nx < GRID && ny >= 0 && ny < GRID && !isBody(nx, ny)) return d;
+      if (nx >= 0 && nx < GRID && ny >= 0 && ny < GRID && !isBodyLoose(nx, ny)) return d;
     }
-    return dirs[0]; // Morte inevitabile
+    return validDirs[0]; 
   }, []);
 
   // --- CONTROLLI E SETUP ---
   const spawnFood = useCallback(() => {
-    let newFood;
-    while (true) {
-      newFood = { x: Math.floor(Math.random() * GRID), y: Math.floor(Math.random() * GRID) };
-      if (!game.current.snake.some(s => s.x === newFood.x && s.y === newFood.y)) break;
+    // FIX: Previene il loop infinito se il serpente occupa quasi tutta la mappa
+    const freeSpots: Point[] = [];
+    for (let x = 0; x < GRID; x++) {
+      for (let y = 0; y < GRID; y++) {
+        if (!game.current.snake.some(s => s.x === x && s.y === y)) {
+          freeSpots.push({ x, y });
+        }
+      }
     }
-    game.current.food = newFood;
+    if (freeSpots.length > 0) {
+      game.current.food = freeSpots[Math.floor(Math.random() * freeSpots.length)];
+    }
   }, []);
 
   const startGame = (selectedMode: "manual" | "auto") => {
@@ -91,7 +103,7 @@ export default function SnakeDopamine() {
       particles: [],
       texts: [],
       logicTimer: 0,
-      speed: selectedMode === "auto" ? 35 : 110, // Più veloce e frenetico
+      speed: selectedMode === "auto" ? 35 : 110,
       shake: 0,
       lastTime: performance.now(),
     };
@@ -104,7 +116,7 @@ export default function SnakeDopamine() {
     if (gameState !== "playing" || mode !== "manual") return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)) e.preventDefault();
-      
+
       const lastDir = game.current.inputQueue.length > 0 
         ? game.current.inputQueue[game.current.inputQueue.length - 1] 
         : game.current.dir;
@@ -114,7 +126,7 @@ export default function SnakeDopamine() {
       if ((e.key === "ArrowDown" || e.key === "s") && lastDir.y === 0) newDir = { x: 0, y: 1 };
       if ((e.key === "ArrowLeft" || e.key === "a") && lastDir.x === 0) newDir = { x: -1, y: 0 };
       if ((e.key === "ArrowRight" || e.key === "d") && lastDir.x === 0) newDir = { x: 1, y: 0 };
-      
+
       if (newDir) game.current.inputQueue.push(newDir);
     };
     window.addEventListener("keydown", handleKeyDown, { passive: false });
@@ -130,10 +142,12 @@ export default function SnakeDopamine() {
 
     const render = (time: number) => {
       const state = game.current;
-      const dt = time - state.lastTime;
+      let dt = time - state.lastTime;
+      // FIX: Previene dt giganteschi (es. quando l'utente cambia scheda del browser) che instakillano il serpente
+      if (dt > 100) dt = 16; 
       state.lastTime = time;
 
-      // 1. LOGIC TICK (aggiornamento posizioni sulla griglia)
+      // 1. LOGIC TICK
       state.logicTimer += dt;
       if (state.logicTimer >= state.speed) {
         state.logicTimer -= state.speed;
@@ -148,33 +162,38 @@ export default function SnakeDopamine() {
         const nextX = head.x + state.dir.x;
         const nextY = head.y + state.dir.y;
 
-        // Gestione collisioni: fermiamo l'aggiornamento PRIMA di muoverci fuori mappa
-        if (nextX < 0 || nextX >= GRID || nextY < 0 || nextY >= GRID || state.snake.some(s => s.x === nextX && s.y === nextY)) {
-          state.shake = 20; // Impatto!
+        // FIX: Ignoriamo l'ultima porzione della coda nella collisione perché si starà già muovendo
+        const isSelfCollision = state.snake.some((s, index) => 
+          index !== state.snake.length - 1 && s.x === nextX && s.y === nextY
+        );
+
+        if (nextX < 0 || nextX >= GRID || nextY < 0 || nextY >= GRID || isSelfCollision) {
+          state.shake = 20; 
           setGameState("gameover");
           return; 
         }
 
-        // Movimento (passaggio del testimone da un segmento all'altro)
-        const newSnake = [{ x: nextX, y: nextY, px: head.x, py: head.y }];
+        // FIX: Passaggio del testimone (px e py devono guardare la VECCHIA posizione dell'elemento fisicamente precedente)
+        const newSnake: SnakeSegment[] = [{ x: nextX, y: nextY, px: head.x, py: head.y }];
         for (let i = 0; i < state.snake.length - 1; i++) {
           newSnake.push({ 
-            x: state.snake[i].x, y: state.snake[i].y, 
-            px: state.snake[i].px, py: state.snake[i].py 
+            x: state.snake[i].x, 
+            y: state.snake[i].y, 
+            px: state.snake[i + 1].x, 
+            py: state.snake[i + 1].y 
           });
         }
 
         // Mangia il cibo
         if (nextX === state.food.x && nextY === state.food.y) {
           setScore(s => s + 10);
-          state.shake = 5; // Piccolo shake dopaminico
-          if (mode === "manual") state.speed = Math.max(50, state.speed - 2); // Accelera
+          state.shake = 5; 
+          if (mode === "manual") state.speed = Math.max(50, state.speed - 2);
 
-          // Aggiungi coda nello stesso punto dell'ultimo segmento
+          // FIX: Aggiungi la coda ESATTAMENTE alle coordinate statiche della coda precedente in modo che non subisca interpolazione errata in questo frame
           const tail = state.snake[state.snake.length - 1];
-          newSnake.push({ x: tail.x, y: tail.y, px: tail.px, py: tail.py });
+          newSnake.push({ x: tail.x, y: tail.y, px: tail.x, py: tail.y });
 
-          // Effetti particellari ed esplosione di punti
           state.texts.push({ x: nextX * CELL, y: nextY * CELL, text: "+10", life: 1, maxLife: 1 });
           for (let i = 0; i < 15; i++) {
             state.particles.push({
@@ -189,11 +208,10 @@ export default function SnakeDopamine() {
         state.snake = newSnake;
       }
 
-      // 2. DISEGNO GRAFICA (a 60 FPS)
-      ctx.fillStyle = "#0f172a"; // Sfondo scuro e profondo
+      // 2. DISEGNO GRAFICA
+      ctx.fillStyle = "#0f172a"; 
       ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
-      // Sfondo griglia flebile
       ctx.fillStyle = "rgba(255, 255, 255, 0.02)";
       for(let i=0; i<GRID; i++) {
         for(let j=0; j<GRID; j++) {
@@ -201,18 +219,17 @@ export default function SnakeDopamine() {
         }
       }
 
-      // Screen Shake Effect
       ctx.save();
       if (state.shake > 0) {
         ctx.translate((Math.random() - 0.5) * state.shake, (Math.random() - 0.5) * state.shake);
-        state.shake *= 0.8; // Smorzamento del tremore
+        state.shake *= 0.8; 
         if (state.shake < 0.5) state.shake = 0;
       }
 
       const progress = Math.min(1, state.logicTimer / state.speed);
       const interp = (p1: number, p2: number) => p1 + (p2 - p1) * progress;
 
-      // Disegno Cibo (Glow & Pulse)
+      // Cibo
       const pulse = 1 + Math.sin(time / 150) * 0.2;
       ctx.shadowBlur = 20;
       ctx.shadowColor = "#ef4444";
@@ -222,16 +239,16 @@ export default function SnakeDopamine() {
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      // Disegno Corpo del Serpente (Unica linea continua e arrotondata, ZERO bug visivi)
+      // Corpo Serpente
       ctx.shadowBlur = 15;
       ctx.shadowColor = "#10b981";
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.lineWidth = CELL * 0.7;
-      
+
       const grad = ctx.createLinearGradient(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-      grad.addColorStop(0, "#34d399"); // Verde brillante testa
-      grad.addColorStop(1, "#059669"); // Verde scuro coda
+      grad.addColorStop(0, "#34d399"); 
+      grad.addColorStop(1, "#059669"); 
       ctx.strokeStyle = grad;
 
       ctx.beginPath();
@@ -244,11 +261,11 @@ export default function SnakeDopamine() {
       }
       ctx.stroke();
 
-      // Disegno Testa (Più evidente e con occhi direzionali)
+      // Testa
       const headS = state.snake[0];
       const hx = interp(headS.px, headS.x) * CELL + CELL / 2;
       const hy = interp(headS.py, headS.y) * CELL + CELL / 2;
-      
+
       ctx.fillStyle = "#fff";
       ctx.shadowBlur = 20;
       ctx.shadowColor = "#34d399";
@@ -256,26 +273,26 @@ export default function SnakeDopamine() {
       ctx.arc(hx, hy, CELL * 0.45, 0, Math.PI * 2);
       ctx.fill();
 
-      // Occhi (calcoliamo la direzione visuale)
+      // Occhi
       let dx = headS.x - headS.px;
       let dy = headS.y - headS.py;
-      if (dx === 0 && dy === 0) { dx = state.dir.x; dy = state.dir.y; } // fallback se fermo
-      
+      if (dx === 0 && dy === 0) { dx = state.dir.x; dy = state.dir.y; }
+
       ctx.fillStyle = "#0f172a";
       ctx.shadowBlur = 0;
       const eyeOffset = CELL * 0.2;
       const eyeSize = CELL * 0.15;
       ctx.beginPath();
-      if (dx !== 0) { // Muove orizzontale
+      if (dx !== 0) {
         ctx.arc(hx + dx * eyeOffset, hy - eyeOffset, eyeSize, 0, Math.PI*2);
         ctx.arc(hx + dx * eyeOffset, hy + eyeOffset, eyeSize, 0, Math.PI*2);
-      } else { // Muove verticale
+      } else { 
         ctx.arc(hx - eyeOffset, hy + dy * eyeOffset, eyeSize, 0, Math.PI*2);
         ctx.arc(hx + eyeOffset, hy + dy * eyeOffset, eyeSize, 0, Math.PI*2);
       }
       ctx.fill();
 
-      // Disegno Particelle
+      // Particelle
       for (let i = state.particles.length - 1; i >= 0; i--) {
         const p = state.particles[i];
         p.x += p.vx; p.y += p.vy;
@@ -289,12 +306,12 @@ export default function SnakeDopamine() {
       }
       ctx.globalAlpha = 1;
 
-      // Disegno Testi Fluttuanti (es. +10)
+      // Testi Fluttuanti
       ctx.font = "bold 20px sans-serif";
       ctx.textAlign = "center";
       for (let i = state.texts.length - 1; i >= 0; i--) {
         const t = state.texts[i];
-        t.y -= dt * 0.05; // Vola verso l'alto
+        t.y -= dt * 0.05;
         t.life -= dt / 1000;
         if (t.life <= 0) { state.texts.splice(i, 1); continue; }
         ctx.fillStyle = `rgba(255, 255, 255, ${t.life / t.maxLife})`;
@@ -304,7 +321,7 @@ export default function SnakeDopamine() {
         ctx.shadowBlur = 0;
       }
 
-      ctx.restore(); // Fine Screen Shake
+      ctx.restore();
       animationFrameId = requestAnimationFrame(render);
     };
 
@@ -322,7 +339,6 @@ export default function SnakeDopamine() {
       <div style={{ position: "relative", width: `${CANVAS_SIZE}px`, height: `${CANVAS_SIZE}px`, borderRadius: "12px", overflow: "hidden", boxShadow: "0 20px 50px -12px rgba(0,0,0,0.5), 0 0 0 4px #1e293b" }}>
         <canvas ref={canvasRef} width={CANVAS_SIZE} height={CANVAS_SIZE} style={{ display: "block" }} />
 
-        {/* OVERLAY MENU */}
         {gameState === "menu" && (
           <div style={{ position: "absolute", inset: 0, backgroundColor: "rgba(15, 23, 42, 0.85)", backdropFilter: "blur(4px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "16px", zIndex: 10 }}>
             <h1 style={{ color: "#34d399", margin: 0, fontSize: "2.5rem", textShadow: "0 0 20px #34d399", fontWeight: 800 }}>NEON SNAKE</h1>
@@ -336,7 +352,6 @@ export default function SnakeDopamine() {
           </div>
         )}
 
-        {/* OVERLAY GAME OVER */}
         {gameState === "gameover" && (
           <div style={{ position: "absolute", inset: 0, backgroundColor: "rgba(220, 38, 38, 0.15)", backdropFilter: "blur(4px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 10, animation: "fadeIn 0.3s" }}>
             <h2 style={{ color: "#f87171", fontSize: "3rem", margin: "0 0 10px 0", textShadow: "0 0 20px #ef4444", fontWeight: 900 }}>WASTED</h2>
