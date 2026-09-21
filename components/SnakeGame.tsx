@@ -6,12 +6,12 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 type Point = { x: number; y: number };
 type SnakeSegment = { x: number; y: number; px: number; py: number };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
-type FloatingText = { x: number; y: number; text: string; life: number; maxLife: number; color: string; scale?: number };
+type FloatingText = { x: number; y: number; text: string; life: number; maxLife: number; color: string; scale?: number; rot?: number };
 
 const GRID = 20;
 const CELL = 20;
 const CANVAS_SIZE = GRID * CELL;
-const N = GRID * GRID; // 400 celle
+const N = GRID * GRID;
 
 export default function SnakeDopamine() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -21,7 +21,7 @@ export default function SnakeDopamine() {
   const [score, setScore] = useState<number>(0);
   const [completion, setCompletion] = useState<string>("0.0");
 
-  // --- GENERAZIONE MAPPA HAMILTONIANA (VITTORIA MATEMATICA 100%) ---
+  // Generazione Mappa Hamiltoniana (Per la sicurezza del 100%)
   const cycleNumber = useMemo(() => {
     const arr = Array(GRID).fill(0).map(() => Array(GRID).fill(0));
     let cx = 0, cy = 0;
@@ -52,12 +52,13 @@ export default function SnakeDopamine() {
     shake: 0,
     flash: 0,
     lastTime: 0,
-    activeTime: 0, // Traccia il tempo reale effettivo di gioco
+    activeTime: 0, 
     combo: 1,
     lastEatTime: 0,
     hyperdriveGlow: 0,
   });
 
+  // --- LOGICA AI "PREDATOR" (A* GUIDED HAMILTONIAN) ---
   const getSmartDir = useCallback(() => {
     const { snake, food } = game.current;
     const head = snake[0];
@@ -71,15 +72,17 @@ export default function SnakeDopamine() {
     if (safeInterval === 0 && snake.length < N) safeInterval = N;
 
     let distToFood = (foodIdx - headIdx + N) % N;
+    
     let bestNext = null;
-    let maxJump = -1;
+    let bestScore = -Infinity;
+    let defaultDir = {x: 0, y: -1};
 
-    const dirs = [{x:0, y:-1}, {x:0, y:1}, {x:-1, y:0}, {x:1, y:0}];
-    let defaultDir = dirs[0];
+    // Modalità "Pure Puzzle" post-92% per chiudere in bellezza in puro ASMR
+    const isLateGame = snake.length > N * 0.92; 
+    const margin = isLateGame ? N : 3; 
 
-    // Disattiva scorciatoie al 75% per garantire che si incastri perfettamente come un puzzle
-    const isLateGame = snake.length > N * 0.75; 
-    const margin = isLateGame ? N : 2; 
+    // Shuffle dinamico delle direzioni per imprevedibilità visiva
+    const dirs = [{x:0, y:-1}, {x:0, y:1}, {x:-1, y:0}, {x:1, y:0}].sort(() => Math.random() - 0.5);
 
     for (const d of dirs) {
       const nx = head.x + d.x, ny = head.y + d.y;
@@ -87,12 +90,18 @@ export default function SnakeDopamine() {
         const nIdx = cycleNumber[ny][nx];
         const jump = (nIdx - headIdx + N) % N;
         
-        if (jump === 1) defaultDir = d; // Mossa sicura base
+        if (jump === 1) defaultDir = d; // Via sicura di default
 
-        // Scorciatoie dopaminiche
-        if (jump > 0 && jump <= distToFood && jump <= safeInterval - margin) {
-          if (jump > maxJump) {
-            maxJump = jump;
+        if (jump > 0 && jump <= safeInterval - margin && jump <= distToFood) {
+          // Euristica di attacco (Distanza fisica di Manhattan)
+          const manhattan = Math.abs(nx - food.x) + Math.abs(ny - food.y);
+          
+          // Formula del punteggio: Vogliamo la minima distanza fisica. 
+          // Se ci sono mosse equivalenti, privilegiamo un po' il salto, con un tocco di randomicità.
+          const score = -manhattan * 100 + jump * 0.1 + (Math.random() * 5);
+
+          if (score > bestScore) {
+            bestScore = score;
             bestNext = d;
           }
         }
@@ -163,26 +172,23 @@ export default function SnakeDopamine() {
     const render = (time: number) => {
       const state = game.current;
       let dt = time - state.lastTime;
-      if (dt > 100) dt = 16; // Previene scatti al rientro della scheda
+      if (dt > 100) dt = 16; 
       state.lastTime = time;
       state.activeTime += dt;
 
-      // --- PID SPEED CONTROLLER (Magia per 0.4% costante) ---
+      // PID SPEED CONTROLLER (Mantiene la barra fissa a 0.4%/sec)
       if (mode === "auto") {
         const elapsedSec = state.activeTime / 1000;
         const currentApples = state.snake.length - 2;
-        const targetApples = elapsedSec * 1.6; // 1.6 mele/sec = esattamente 0.4% di completamento al sec
+        const targetApples = elapsedSec * 1.6; // 1.6 mele/sec = 0.4% completamento/sec
         const diff = targetApples - currentApples;
         
-        // Se in ritardo, la velocità scala brutalmente a 1ms (Warp speed) per recuperare
-        state.speed = Math.max(1, Math.min(100, 25 - diff * 20));
-        
-        // Effetto grafico Warp
+        state.speed = Math.max(1, Math.min(100, 30 - diff * 20));
         state.hyperdriveGlow = state.speed < 5 ? Math.min(1, state.hyperdriveGlow + dt * 0.01) : Math.max(0, state.hyperdriveGlow - dt * 0.005);
       }
 
       state.logicTimer += dt;
-      // Loop While per permettere al gioco di fare N step per frame quando in Hyperdrive
+      
       while (state.logicTimer >= state.speed) {
         state.logicTimer -= state.speed;
 
@@ -203,25 +209,35 @@ export default function SnakeDopamine() {
           return; 
         }
 
+        // Effetto Cometa: Particella lasciata dalla testa ad ogni passo
+        const percent = state.snake.length / N;
+        const currentHue = (140 + percent * 260) % 360;
+        if (Math.random() > 0.3) {
+            state.particles.push({
+                x: head.x * CELL + CELL / 2, y: head.y * CELL + CELL / 2,
+                vx: 0, vy: 0, life: 1, maxLife: 0.3 + Math.random() * 0.3, 
+                color: state.hyperdriveGlow > 0.5 ? "#67e8f9" : `hsl(${currentHue}, 100%, 70%)`, size: CELL * 0.25
+            });
+        }
+
         const newSnake: SnakeSegment[] = [{ x: nextX, y: nextY, px: head.x, py: head.y }];
         for (let i = 0; i < state.snake.length - 1; i++) {
           newSnake.push({ x: state.snake[i].x, y: state.snake[i].y, px: state.snake[i + 1].x, py: state.snake[i + 1].y });
         }
 
-        // MANGIA IL CIBO
         if (nextX === state.food.x && nextY === state.food.y) {
           const timeSinceLastEat = state.activeTime - state.lastEatTime;
           state.combo = timeSinceLastEat < 800 ? state.combo + 1 : 1;
           state.lastEatTime = state.activeTime;
 
-          const earned = 10 * Math.min(state.combo, 10);
+          const earned = 10 * Math.min(state.combo, 15);
           setScore(s => s + earned);
           
           const rawPercent = ((state.snake.length + 1) / N) * 100;
           setCompletion(rawPercent.toFixed(1));
           
           state.shake = Math.min(25, 4 + state.combo * 1.5); 
-          state.flash = rawPercent > 90 ? 1.5 : 1; // Flash fortissimo nel finale
+          state.flash = rawPercent > 92 ? 1.5 : 1; 
           
           if (mode === "manual") state.speed = Math.max(30, state.speed - 1);
 
@@ -236,19 +252,25 @@ export default function SnakeDopamine() {
 
           let comboStr = "";
           let textColor = "#fff";
-          if (state.combo >= 15) { comboStr = " GODLIKE!"; textColor = "#fbbf24"; }
-          else if (state.combo >= 5) { comboStr = " MEGA!"; textColor = "#a78bfa"; }
+          if (state.combo >= 20) { comboStr = " UNREAL!"; textColor = "#fbbf24"; }
+          else if (state.combo >= 8) { comboStr = " MEGA!"; textColor = "#a78bfa"; }
           if (state.hyperdriveGlow > 0.5) { comboStr = " WARP!"; textColor = "#22d3ee"; }
           
-          state.texts.push({ x: nextX * CELL, y: nextY * CELL, text: `+${earned}${comboStr}`, life: 1, maxLife: 1, color: textColor, scale: 1.5 });
+          // Testo ruotato stile fumetto
+          state.texts.push({ 
+            x: nextX * CELL, y: nextY * CELL, 
+            text: `+${earned}${comboStr}`, 
+            life: 1, maxLife: 1.2, 
+            color: textColor, scale: 1.6, 
+            rot: (Math.random() - 0.5) * 0.4 
+          });
           
-          const hue = 140 + (rawPercent / 100) * 260; 
           for (let i = 0; i < 20 + state.combo; i++) {
             state.particles.push({
               x: nextX * CELL + CELL / 2, y: nextY * CELL + CELL / 2,
-              vx: (Math.random() - 0.5) * 18, vy: (Math.random() - 0.5) * 18,
-              life: 1, maxLife: 0.5 + Math.random(), 
-              color: `hsl(${hue + (Math.random() * 60 - 30)}, 100%, 65%)`,
+              vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20,
+              life: 1, maxLife: 0.4 + Math.random() * 0.4, 
+              color: `hsl(${currentHue + (Math.random() * 60 - 30)}, 100%, 65%)`,
               size: Math.random() * 6 + 2
             });
           }
@@ -257,7 +279,7 @@ export default function SnakeDopamine() {
         state.snake = newSnake;
       }
 
-      // --- RENDER VISIVO A 60 FPS ---
+      // --- RENDER VISIVO ---
       ctx.fillStyle = "#09090b"; 
       ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
@@ -281,27 +303,26 @@ export default function SnakeDopamine() {
         if (state.shake < 0.5) state.shake = 0;
       }
 
-      // Evitiamo interpolazioni strane se stiamo saltando troppi frame nel Warp
       const progress = state.speed < 5 ? 1 : Math.min(1, state.logicTimer / state.speed);
       const interp = (p1: number, p2: number) => p1 + (p2 - p1) * progress;
       
       const percent = state.snake.length / N;
       const currentHue = (140 + percent * 260) % 360; 
 
-      // Cibo
-      const pulse = 1 + Math.sin(time / 80) * 0.3;
+      // Cibo Pulsante
+      const pulse = 1 + Math.sin(time / 70) * 0.35;
       const foodHue = state.hyperdriveGlow > 0.5 ? 190 : (currentHue + 180) % 360;
-      ctx.shadowBlur = 30;
+      ctx.shadowBlur = 35;
       ctx.shadowColor = `hsl(${foodHue}, 100%, 60%)`;
-      ctx.fillStyle = `hsl(${foodHue}, 100%, 70%)`;
+      ctx.fillStyle = `hsl(${foodHue}, 100%, 75%)`;
       ctx.beginPath();
       ctx.arc(state.food.x * CELL + CELL/2, state.food.y * CELL + CELL/2, (CELL/2.2) * pulse, 0, Math.PI * 2);
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      // Corpo Serpente (Base + Hyperdrive Glow)
-      const isLateGame = percent > 0.85;
-      ctx.shadowBlur = isLateGame ? 40 : 20 + state.hyperdriveGlow * 30;
+      // Corpo Serpente (Base + Hyperdrive)
+      const isLateGame = percent > 0.90;
+      ctx.shadowBlur = isLateGame ? 40 : 25 + state.hyperdriveGlow * 30;
       ctx.shadowColor = state.hyperdriveGlow > 0.1 ? "#22d3ee" : `hsl(${currentHue}, 100%, 50%)`;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -322,52 +343,55 @@ export default function SnakeDopamine() {
       }
       ctx.stroke();
 
-      // Testa
+      // Testa Brillante
       const headS = state.snake[0];
       const hx = interp(headS.px, headS.x) * CELL + CELL / 2;
       const hy = interp(headS.py, headS.y) * CELL + CELL / 2;
 
       ctx.fillStyle = "#fff";
-      ctx.shadowBlur = 40;
+      ctx.shadowBlur = 50;
       ctx.beginPath();
       ctx.arc(hx, hy, CELL * 0.5, 0, Math.PI * 2);
       ctx.fill();
 
-      // Particelle
+      // Particelle e Scia Cometa
       for (let i = state.particles.length - 1; i >= 0; i--) {
         const p = state.particles[i];
         p.x += p.vx; p.y += p.vy;
         p.life -= dt / 1000;
         if (p.life <= 0) { state.particles.splice(i, 1); continue; }
         ctx.fillStyle = p.color;
-        ctx.globalAlpha = p.life / p.maxLife;
+        ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
         ctx.shadowBlur = 15;
         ctx.shadowColor = p.color;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, p.size * (p.life / p.maxLife), 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
       ctx.shadowBlur = 0;
 
-      // Testi Dopaminici
+      // Testi Dopaminici (Pop-out & Rotate)
       ctx.textAlign = "center";
       for (let i = state.texts.length - 1; i >= 0; i--) {
         const t = state.texts[i];
-        t.y -= dt * 0.1;
+        t.y -= dt * 0.15;
         t.life -= dt / 1000;
         if (t.life <= 0) { state.texts.splice(i, 1); continue; }
         
-        const scale = 1 + (1 - t.life) * (t.scale || 1);
-        ctx.font = `900 ${18 * scale}px 'Inter', system-ui, sans-serif`;
+        const scale = 1 + (1 - t.life / t.maxLife) * (t.scale || 1);
+        ctx.save();
+        ctx.translate(t.x, t.y);
+        ctx.rotate(t.rot || 0);
+        ctx.font = `900 ${16 * scale}px 'Inter', system-ui, sans-serif`;
         ctx.fillStyle = t.color;
-        ctx.globalAlpha = t.life / t.maxLife;
-        ctx.shadowBlur = 20;
+        ctx.globalAlpha = Math.max(0, t.life / t.maxLife);
+        ctx.shadowBlur = 25;
         ctx.shadowColor = t.color;
-        ctx.fillText(t.text, t.x, t.y);
+        ctx.fillText(t.text, 0, 0);
+        ctx.restore();
       }
       ctx.globalAlpha = 1;
-      ctx.shadowBlur = 0;
 
       ctx.restore();
       animationFrameId = requestAnimationFrame(render);
@@ -398,7 +422,7 @@ export default function SnakeDopamine() {
           <div style={{ position: "absolute", inset: 0, backgroundColor: "rgba(9, 9, 11, 0.9)", backdropFilter: "blur(12px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "20px", zIndex: 10 }}>
             <div style={{ textAlign: "center", marginBottom: "10px" }}>
               <h1 style={{ color: "#fff", margin: 0, fontSize: "4rem", textShadow: "0 0 40px #34d399, 0 0 10px #34d399", fontWeight: 900, fontStyle: "italic", letterSpacing: "-2px" }}>SNAKE</h1>
-              <h2 style={{ color: "#f472b6", margin: "-12px 0 0 0", fontSize: "1.6rem", textShadow: "0 0 25px #f472b6", letterSpacing: "8px" }}>DOPAMINE</h2>
+              <h2 style={{ color: "#f472b6", margin: "-12px 0 0 0", fontSize: "1.6rem", textShadow: "0 0 25px #f472b6", letterSpacing: "8px" }}>PREDATOR AI</h2>
             </div>
             <button onClick={() => startGame("manual")} style={{ padding: "16px 32px", fontSize: "16px", backgroundColor: "#3b82f6", color: "white", border: "none", borderRadius: "12px", cursor: "pointer", width: "280px", fontWeight: "bold", boxShadow: "0 0 20px rgba(59, 130, 246, 0.4)", transform: "scale(1)", transition: "all 0.1s" }} onMouseOver={e => e.currentTarget.style.transform = "scale(1.05)"} onMouseOut={e => e.currentTarget.style.transform = "scale(1)"}>
               🎮 GIOCA (MANUALE)
@@ -436,5 +460,6 @@ export default function SnakeDopamine() {
     </div>
   );
 }
+
 
 
